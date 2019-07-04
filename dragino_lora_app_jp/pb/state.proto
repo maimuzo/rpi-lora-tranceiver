@@ -1,0 +1,11 @@
+syntax = "proto2";
+
+package lora_state;
+
+message State {
+  required int32 id = 1; // 4 bytes
+  required int32 epoch_sec = 2; // 4bytes
+  required float lat = 3; // 4bytes
+  required float long = 4; // 4bytes
+  optional int32 direction_from_north = 5; // 4bytes
+}
