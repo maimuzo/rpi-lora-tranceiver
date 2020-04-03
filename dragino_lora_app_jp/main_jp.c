@@ -135,7 +135,7 @@
 #define IRQ_LORA_FHSSCH_MASK 0x02
 #define IRQ_LORA_CDDETD_MASK 0x01
 
-// DIO function mappings                D0D1D2D3
+// DIO function mappings             D0D1D2D3
 #define MAP_DIO0_LORA_RXDONE 0x00 // 00------
 #define MAP_DIO0_LORA_TXDONE 0x40 // 01------
 #define MAP_DIO1_LORA_RXTOUT 0x00 // --00----
@@ -148,24 +148,30 @@
 typedef bool boolean;
 typedef unsigned char byte;
 
+// 受信機としてのチャネル? (電波法上の920~925Mhzのチャネルではない?)
 static const int CHANNEL = 0;
 
+// 受信パッファ
 char message[256];
 
+// チップがsx1272であるか
 bool sx1272 = true;
 
+// 受信した長さ(なぜグローバルなのか不明。無くても良い気がする)
 byte receivedbytes;
 
+// LoRa拡散率
 enum sf_t
 {
-    SF7 = 7,
-    SF8,
-    SF9,
-    SF10,
-    SF11,
-    SF12
+    SF7 = 7, // 242 byte / 394 ms
+    SF8,     // 125 byte / 399 ms
+    SF9,     // 53 byte / 390 ms
+    SF10,    // 11 byte / 370 ms
+    SF11,    // 日本では使えない
+    SF12     // 日本では使えない
 };
 
+// 独自
 bool isReceivedFirstPacket = false;
 
 /*******************************************************************************
@@ -182,28 +188,34 @@ int RST = 0;
 // Set spreading factor (SF7 - SF12)
 sf_t sf = SF7;
 
+// 使用する中心周波数
 // Set center frequency
 // uint32_t  freq = 868100000; // in Mhz! (868.1)
-uint32_t freq = 923200000; // in 923.2Mhz
+uint32_t freq = 923200000; // in 923.2Mhz (920 ~ 925 Mhz in japan)
 
+// 送信内容初期値(及び最大32byte)
 byte hello[32] = "HELLO";
 
+// 使ってない
 void die(const char *s)
 {
     perror(s);
     exit(1);
 }
 
+// ロック取得?
 void selectreceiver()
 {
     digitalWrite(ssPin, LOW);
 }
 
+// ロック開放?
 void unselectreceiver()
 {
     digitalWrite(ssPin, HIGH);
 }
 
+// レジスターをaddrから1バイト読む
 byte readReg(byte addr)
 {
     unsigned char spibuf[2];
@@ -217,6 +229,7 @@ byte readReg(byte addr)
     return spibuf[1];
 }
 
+/// レジスターにaddrから1バイト書き込む
 void writeReg(byte addr, byte value)
 {
     unsigned char spibuf[2];
@@ -332,6 +345,10 @@ void SetupLoRa()
     writeReg(REG_LNA, LNA_MAX_GAIN);
 }
 
+/// 受信処理本体
+/// char *payload 受信内容はpayloadに先頭から書き込まれる payloadは静的に確保されているmessage[256]を指している
+/// 受信した長さはreceivedbytesに書き込まれる
+/// return 受信成功ならtrue, 失敗ならfalse
 boolean receive(char *payload)
 {
     // clear rxDone
@@ -348,13 +365,15 @@ boolean receive(char *payload)
     }
     else
     {
-
+        // 受信した先頭アドレスと長さ
         byte currentAddr = readReg(REG_FIFO_RX_CURRENT_ADDR);
         byte receivedCount = readReg(REG_RX_NB_BYTES);
         receivedbytes = receivedCount;
 
+        // 処理したので先頭アドレスを移動
         writeReg(REG_FIFO_ADDR_PTR, currentAddr);
 
+        // 受信した分payloadに書き込む
         for (int i = 0; i < receivedCount; i++)
         {
             payload[i] = (char)readReg(REG_FIFO);
@@ -363,16 +382,21 @@ boolean receive(char *payload)
     return true;
 }
 
+/// 受信処理
+/// 無限ループの中で1msスリープしながら呼ばれる
 void receivepacket()
 {
 
     long int SNR;
     int rssicorr;
 
+    // IRQで受信完了を待っている?
     if (digitalRead(dio0) == 1)
     {
+        // 受信処理本体
         if (receive(message))
         {
+            // 受信状況を取得
             byte value = readReg(REG_PKT_SNR_VALUE);
             if (value & 0x80) // The SNR sign bit is 1
             {
@@ -402,12 +426,14 @@ void receivepacket()
             printf("\n");
             printf("Payload: %s\n", message);
 
+            // 独自に付けたもの
             isReceivedFirstPacket = true;
         } // received a message
 
     } // dio0=1
 }
 
+/// pwに指定した数値がpw dBmとして送信出力強度に使われる
 static void configPower(int8_t pw)
 {
     if (sx1272 == false)
@@ -440,6 +466,11 @@ static void configPower(int8_t pw)
     }
 }
 
+/// download buffer to the radio FIFO
+/// 送信バッファに書き込んでからSPI経由で送信する
+/// byte addr ?
+/// byte *value 送信内容。最大255byte
+/// byte len valueの長さ
 static void writeBuf(byte addr, byte *value, byte len)
 {
     unsigned char spibuf[256];
@@ -453,6 +484,9 @@ static void writeBuf(byte addr, byte *value, byte len)
     unselectreceiver();
 }
 
+/// frameの内容をdatalen分送信する
+/// byte *frame 送信内容。最大255byte
+/// byte datalen frameの長さ
 void txlora(byte *frame, byte datalen)
 {
 
@@ -476,12 +510,13 @@ void txlora(byte *frame, byte datalen)
     printf("send: %s\n", frame);
 }
 
+/// 独自に作ったもの。
 long getEpochTimeSec()
 {
-
     return (unsigned long)time(NULL);
 }
 
+/// 独自に作ったもの。もう少し抽象化する必要がある
 void sendMode(char *text)
 {
     opmodeLora();
@@ -507,6 +542,7 @@ void sendMode(char *text)
     printf("start(sec): %lu, end(sec): %lu, delay(sec): %lu\n", startTime, endTime, endTime - startTime);
 }
 
+/// 独自に作ったもの。もう少し抽象化する必要がある
 void receiveMode()
 {
     // radio init
